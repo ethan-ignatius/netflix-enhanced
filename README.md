@@ -31,3 +31,7 @@ npm run dev
 2. Paste your TMDb API key and save.
 3. Upload your Letterboxd export ZIP.
 4. Hover an expanded Netflix title card to see ratings, match score, and badges.
+
+## To Do
+1. X-Ray vision
+2. Watch history per movie/show.
