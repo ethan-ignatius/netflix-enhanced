@@ -15,6 +15,14 @@ export type TmdbFeature = {
   genres: string[];
 };
 
+export type TmdbCastMember = {
+  id: number;
+  name: string;
+  character?: string;
+  order?: number;
+  profilePath?: string | null;
+};
+
 type TmdbCacheEntry = {
   storedAt: number;
   data: TitleResolvedMessage["payload"];
@@ -110,13 +118,13 @@ const pickBestMatch = (
 ) => {
   if (!results.length) return null;
   let best: { result: TmdbSearchResult; score: number } | null = null;
-  results.forEach((result) => {
-    if (!result.id) return;
+  for (const result of results) {
+    if (!result.id) continue;
     const { score } = scoreCandidate(info, result, mediaType);
     if (!best || score > best.score) {
       best = { result, score };
     }
-  });
+  }
   if (!best || best.score < 50) return null;
   return best.result;
 };
@@ -148,12 +156,12 @@ const coerceExtractedInfo = (payload: TmdbResolveInput): ExtractedTitleInfo => {
 
 const pickBestFromMulti = (info: ExtractedTitleInfo, results: TmdbSearchResult[]) => {
   let best: { result: TmdbSearchResult; mediaType: "movie" | "tv"; score: number } | null = null;
-  results.forEach((result) => {
+  for (const result of results) {
     const mediaType = result.media_type === "tv" ? "tv" : result.media_type === "movie" ? "movie" : null;
-    if (!mediaType || !result.id) return;
+    if (!mediaType || !result.id) continue;
     const { score } = scoreCandidate(info, result, mediaType);
     if (!best || score > best.score) best = { result, mediaType, score };
-  });
+  }
   if (!best || best.score < 50) return null;
   return best;
 };
@@ -301,6 +309,42 @@ export const getTmdbFeatures = async (
   cache[cacheKey] = { storedAt: Date.now(), data: features };
   await setFeatureCache(cache);
   return features;
+};
+
+export const getTmdbCast = async (
+  apiKey: string,
+  tmdbId: number,
+  mediaType: "movie" | "tv"
+): Promise<TmdbCastMember[]> => {
+  const creditsUrl = `${TMDB_BASE_URL}/${mediaType}/${tmdbId}/credits?api_key=${apiKey}`;
+  const credits = await fetchJson(creditsUrl);
+  const cast = Array.isArray(credits?.cast) ? credits.cast : [];
+
+  return cast
+    .filter(
+      (member: { id?: number; name?: string | null }) =>
+        typeof member?.id === "number" && Boolean(member?.name)
+    )
+    .map(
+      (member: {
+        id: number;
+        name: string;
+        character?: string | null;
+        order?: number;
+        profile_path?: string | null;
+      }) => ({
+        id: member.id,
+        name: member.name,
+        character: member.character ?? undefined,
+        order: typeof member.order === "number" ? member.order : undefined,
+        profilePath: member.profile_path ?? null
+      })
+    )
+    .sort((a: TmdbCastMember, b: TmdbCastMember) => {
+      const ao = a.order ?? Number.POSITIVE_INFINITY;
+      const bo = b.order ?? Number.POSITIVE_INFINITY;
+      return ao - bo;
+    });
 };
 
 export const searchTmdbId = async (

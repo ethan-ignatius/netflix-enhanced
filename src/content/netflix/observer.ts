@@ -37,6 +37,7 @@ let lastRequestId = "";
 let lastOutlined: HTMLElement | null = null;
 let playbackActive = false;
 let lastResolvedPayload: OverlayData | null = null;
+let lastPointerTarget: Element | null = null;
 
 type NxlWindow = Window & {
   __nxlBooted?: boolean;
@@ -175,13 +176,22 @@ const buildEmptyOverlayData = (title: string, year?: number): OverlayData => ({
   }
 });
 
+const getPointerTarget = (): Element | null => {
+  if (!lastPointerTarget) return null;
+  if (!lastPointerTarget.isConnected) {
+    lastPointerTarget = null;
+    return null;
+  }
+  return lastPointerTarget;
+};
+
 const attemptResolve = (reason: string) => {
   if (!overlayEnabled) return;
   updatePlaybackState();
   if (playbackActive) return;
 
   if (DEBUG) log("OVERLAY_MOUNT_ATTEMPT", { reason });
-  const jawbone = findActiveJawbone();
+  const jawbone = findActiveJawbone(getPointerTarget());
   const root = jawbone.jawboneEl;
   const extracted = jawbone.extracted;
 
@@ -305,8 +315,9 @@ const observeTitleChanges = () => {
 
   document.addEventListener(
     "pointerover",
-    () => {
+    (event) => {
       try {
+        lastPointerTarget = event.target as Element;
         scheduleResolve("pointer");
       } catch (error) {
         log("Pointer observer failed", { error });

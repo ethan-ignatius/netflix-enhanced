@@ -349,6 +349,10 @@ export const extractDisplayTitle = (expandedRoot: HTMLElement): {
       rejectedCount += 1;
       return;
     }
+    if (isInHeaderRegion(el)) {
+      rejectedCount += 1;
+      return;
+    }
     if (isInControlsRegion(el, controls)) {
       rejectedCount += 1;
       return;
@@ -376,8 +380,7 @@ export const extractDisplayTitle = (expandedRoot: HTMLElement): {
     const dx = rect.left - rootRect.left;
     const dy = rect.top - rootRect.top;
     const dist = Math.hypot(dx, dy);
-    const regionPenalty =
-      isInMetadataRegion(el) || isInHeaderRegion(el) ? 120 : 0;
+    const regionPenalty = isInMetadataRegion(el) ? 120 : 0;
     const score = fontSize * 10 + fontWeight / 10 + Math.max(0, 300 - dist) - regionPenalty;
     if (!best || score > best.score) {
       best = { el, score, text };
@@ -493,11 +496,30 @@ const extractTitleFromAnchor = (anchor: HTMLAnchorElement): string | undefined =
   return undefined;
 };
 
+const extractTitleFromElement = (el: Element): string | undefined => {
+  const h = el as HTMLElement;
+  const candidates: Array<string | null | undefined> = [
+    h.getAttribute?.("aria-label") ?? undefined,
+    h.getAttribute?.("data-uia-title") ?? undefined,
+    h.getAttribute?.("title") ?? undefined,
+    (h.querySelector?.("img[alt]") as HTMLImageElement | null)?.alt,
+    h.textContent
+  ];
+  for (const candidate of candidates) {
+    const text = normalizeText(candidate);
+    if (!text) continue;
+    if (isBannedTitleText(text)) continue;
+    if (isInHeaderRegion(h)) continue;
+    return text;
+  }
+  return undefined;
+};
+
 const getBestTitleAnchor = (
   root: HTMLElement,
   previewEl?: Element | null,
   controls?: Element | null
-) => {
+): HTMLAnchorElement | null => {
   const anchors = Array.from(root.querySelectorAll<HTMLAnchorElement>("a[href^='/title/']"));
   const visibleAnchors = anchors.filter((anchor) => isVisible(anchor));
   if (!visibleAnchors.length) return null;
@@ -505,12 +527,20 @@ const getBestTitleAnchor = (
   const previewRect = previewEl?.getBoundingClientRect();
   let best: { anchor: HTMLAnchorElement; score: number } | null = null;
 
-  visibleAnchors.forEach((anchor) => {
-    if (isInHeaderRegion(anchor)) return;
-    if (isInControlsRegion(anchor, controls)) return;
+  for (const anchor of visibleAnchors) {
+    if (isInHeaderRegion(anchor)) continue;
+    if (isInControlsRegion(anchor, controls)) continue;
+    const anchorTitle = extractTitleFromAnchor(anchor);
+    if (!anchorTitle) continue;
     const rect = anchor.getBoundingClientRect();
     const area = rect.width * rect.height;
     let score = 0;
+
+    if (previewRect) {
+      const bandTop = previewRect.top - 220;
+      const bandBottom = previewRect.bottom + 220;
+      if (rect.bottom < bandTop || rect.top > bandBottom) continue;
+    }
 
     if (previewEl && (anchor.contains(previewEl) || previewEl.contains(anchor))) {
       score += 1000;
@@ -524,75 +554,160 @@ const getBestTitleAnchor = (
     }
 
     score += Math.min(area / 100, 200);
-
-    const anchorTitle = extractTitleFromAnchor(anchor);
-    if (anchorTitle) score += 50;
+    score += 50;
 
     if (!best || score > best.score) {
       best = { anchor, score };
     }
-  });
+  }
 
   return best?.anchor ?? null;
 };
 
-export const findActiveJawbone = (): {
+export const findActiveJawbone = (pointerTarget?: Element | null): {
   jawboneEl: HTMLElement | null;
   extracted: ExtractedTitleInfo | null;
   rejectedCount?: number;
   chosenTitleElement?: Element;
 } => {
-  const candidates = collectJawboneCandidates();
+  if (pointerTarget) {
+    const result = resolveFromPointer(pointerTarget);
+    if (result) return result;
+  }
+
+  return resolveFromJawboneScan();
+};
+
+const buildExtracted = (
+  title: string,
+  anchor: HTMLAnchorElement | null,
+  root: HTMLElement
+): ExtractedTitleInfo | null => {
+  const normalizedTitle = normalizeTitle(title);
+  if (!normalizedTitle) return null;
+  const href = anchor?.getAttribute("href") ?? null;
+  const netflixId = parseTitleIdFromHref(href) ?? null;
+  const { year, isSeries } = extractMetadataInfo(root);
+  return { rawTitle: title, normalizedTitle, year: year ?? null, isSeries, netflixId, href };
+};
+
+const resolveFromPointer = (
+  target: Element
+): ReturnType<typeof findActiveJawbone> | null => {
+  const anchor = findNearestTitleAnchor(target);
+  let title: string | undefined;
+  let titleAnchor: HTMLAnchorElement | null = null;
+
+  if (anchor) {
+    const anchorTitle = extractTitleFromAnchor(anchor);
+    if (anchorTitle) {
+      title = normalizeNetflixTitle(anchorTitle) ?? anchorTitle;
+      titleAnchor = anchor;
+    }
+  }
+
+  if (!title) {
+    let current: Element | null = target;
+    let depth = 0;
+    while (current && current !== document.body && depth < 8) {
+      const t = extractTitleFromElement(current);
+      if (t) {
+        title = normalizeNetflixTitle(t) ?? t;
+        break;
+      }
+      current = current.parentElement;
+      depth += 1;
+    }
+  }
+
+  if (!title) return null;
+
+  if (titleAnchor) {
+    const container = findContainerForAnchor(titleAnchor);
+    if (container) {
+      const extractedFromAnchor = buildExtracted(title, titleAnchor, container);
+      if (!extractedFromAnchor) return null;
+      return { jawboneEl: container, extracted: extractedFromAnchor, chosenTitleElement: titleAnchor };
+    }
+  }
+
+  let current: Element | null = titleAnchor ?? target;
+  let depth = 0;
+  while (current && current !== document.body && depth < 8) {
+    if (current instanceof HTMLElement) {
+      const rect = current.getBoundingClientRect();
+      if (rect.width >= 200 && rect.height >= 120) {
+        const extracted = buildExtracted(title, titleAnchor, current);
+        if (extracted) {
+          return { jawboneEl: current, extracted, chosenTitleElement: titleAnchor ?? undefined };
+        }
+      }
+    }
+    current = current.parentElement;
+    depth += 1;
+  }
+
+  return null;
+};
+
+const resolveFromJawboneScan = (): ReturnType<typeof findActiveJawbone> => {
+  const previewCandidate = findJawboneFromPreview();
+  const collected = collectJawboneCandidates().map((root) => ({
+    root: root as HTMLElement,
+    preview: findPreviewElement(root)
+  }));
+  const candidates = previewCandidate
+    ? [
+        { root: previewCandidate.root, preview: previewCandidate.preview },
+        ...collected.filter((c) => c.root !== previewCandidate.root)
+      ]
+    : collected;
   const maxWidth = window.innerWidth * 0.85;
   const maxHeight = window.innerHeight * 0.6;
 
   for (const candidate of candidates) {
-    const rect = candidate.getBoundingClientRect();
+    const root = candidate.root;
+    const rect = root.getBoundingClientRect();
     if (rect.width > maxWidth || rect.height > maxHeight) continue;
-    const preview = findPreviewElement(candidate);
-    const controls = findControlsRow(candidate);
-    const metadata = hasMetadataSection(candidate);
+    const preview = candidate.preview ?? findPreviewElement(root);
+    const controls = findControlsRow(root);
+    const metadata = hasMetadataSection(root);
     if (!preview || !controls) continue;
 
-    const anchor = getBestTitleAnchor(candidate as HTMLElement, preview, controls);
+    const anchor = getBestTitleAnchor(root, preview, controls);
 
-    const display = extractDisplayTitle(candidate as HTMLElement);
-    let title = display.title ?? null;
+    let title: string | null = null;
+    let titleAnchor: HTMLAnchorElement | null = null;
+
     if (anchor) {
       const anchorTitle = extractTitleFromAnchor(anchor);
       if (anchorTitle) {
         title = normalizeNetflixTitle(anchorTitle) ?? anchorTitle;
+        titleAnchor = anchor;
       }
     }
+
+    if (!title) {
+      const display = extractDisplayTitle(root);
+      title = display.title ?? null;
+    }
+
     if (!title && !metadata) continue;
     if (!title && metadata) {
-      const fallbackTitle = getRawTitleText(candidate);
+      const fallbackTitle = getRawTitleText(root);
       if (fallbackTitle && !isBannedTitleText(fallbackTitle)) {
         title = normalizeNetflixTitle(fallbackTitle) ?? fallbackTitle;
       }
     }
     if (!title) continue;
 
-    const href = anchor?.getAttribute("href") ?? null;
-    const netflixId = parseTitleIdFromHref(href) ?? null;
-    const { year, isSeries } = extractMetadataInfo(candidate as HTMLElement);
-    const normalizedTitle = normalizeTitle(title);
-    if (!normalizedTitle) continue;
-
-    const extracted: ExtractedTitleInfo = {
-      rawTitle: title,
-      normalizedTitle,
-      year: year ?? null,
-      isSeries,
-      netflixId,
-      href
-    };
+    const extracted = buildExtracted(title, titleAnchor, root);
+    if (!extracted) continue;
 
     return {
-      jawboneEl: candidate as HTMLElement,
+      jawboneEl: root,
       extracted,
-      rejectedCount: display.rejectedCount,
-      chosenTitleElement: display.chosen
+      chosenTitleElement: titleAnchor ?? undefined
     };
   }
 
@@ -644,6 +759,102 @@ const findExpandedContainers = (): Element[] => {
     });
   }
   return visible.length > 0 ? visible : nodes;
+};
+
+const findPreviewCandidates = (): Element[] => {
+  const candidates: Element[] = [];
+  PREVIEW_SELECTORS.forEach((selector) => {
+    document.querySelectorAll(selector).forEach((el) => {
+      if (!isVisible(el)) return;
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 200 || rect.height < 120) return;
+      candidates.push(el);
+    });
+  });
+  return candidates;
+};
+
+const findJawboneFromPreview = (): { root: HTMLElement; preview: Element } | null => {
+  const previews = findPreviewCandidates();
+  if (!previews.length) return null;
+
+  const maxWidth = window.innerWidth * 0.85;
+  const maxHeight = window.innerHeight * 0.6;
+
+  const sorted = previews.sort((a, b) => {
+    const ra = a.getBoundingClientRect();
+    const rb = b.getBoundingClientRect();
+    return rb.width * rb.height - ra.width * ra.height;
+  });
+
+  for (const preview of sorted) {
+    let current: Element | null = preview;
+    let depth = 0;
+    while (current && depth < 8) {
+      if (current instanceof HTMLElement) {
+        const rect = current.getBoundingClientRect();
+        if (
+          rect.width >= 240 &&
+          rect.height >= 180 &&
+          rect.width <= maxWidth &&
+          rect.height <= maxHeight
+        ) {
+          const controls = findControlsRow(current);
+          if (controls) {
+            return { root: current, preview };
+          }
+        }
+      }
+      current = current.parentElement;
+      depth += 1;
+    }
+  }
+
+  return null;
+};
+
+const findNearestTitleAnchor = (target: Element): HTMLAnchorElement | null => {
+  let current: Element | null = target;
+  while (current && current !== document.body) {
+    if (
+      current instanceof HTMLAnchorElement &&
+      current.getAttribute("href")?.startsWith("/title/")
+    ) {
+      return current;
+    }
+    const direct = current.querySelector?.<HTMLAnchorElement>(":scope > a[href^='/title/']");
+    if (direct && isVisible(direct)) return direct;
+    current = current.parentElement;
+  }
+  const inner = target.querySelector?.<HTMLAnchorElement>("a[href^='/title/']");
+  if (inner && isVisible(inner)) return inner;
+  return null;
+};
+
+const findContainerForAnchor = (anchor: HTMLAnchorElement): HTMLElement | null => {
+  let current: Element | null = anchor;
+  let depth = 0;
+  const maxWidth = window.innerWidth * 0.85;
+  const maxHeight = window.innerHeight * 0.6;
+
+  while (current && current !== document.body && depth < 12) {
+    if (current instanceof HTMLElement) {
+      const rect = current.getBoundingClientRect();
+      if (
+        rect.width >= 240 &&
+        rect.height >= 180 &&
+        rect.width <= maxWidth &&
+        rect.height <= maxHeight
+      ) {
+        const preview = findPreviewElement(current);
+        const controls = findControlsRow(current);
+        if (preview && controls) return current;
+      }
+    }
+    current = current.parentElement;
+    depth += 1;
+  }
+  return null;
 };
 
 const collectJawboneCandidates = (): Element[] => {

@@ -59,6 +59,14 @@ export type ExtractedTitleInfo = {
   href?: string | null;
 };
 
+export type XrayCastEntry = {
+  id: number;
+  name: string;
+  character?: string | null;
+  order?: number;
+  profilePath?: string | null;
+};
+
 export type ResolveOverlayDataPayload = ExtractedTitleInfo;
 
 export type ResolveOverlayDataMessage = {
@@ -71,6 +79,25 @@ export type OverlayDataResolvedMessage = {
   type: "OVERLAY_DATA_RESOLVED";
   requestId: string;
   payload: OverlayData;
+};
+
+export type ResolveXrayPayload = ResolveTitlePayload;
+
+export type ResolveXrayMessage = {
+  type: "RESOLVE_XRAY";
+  requestId: string;
+  payload: ResolveXrayPayload;
+};
+
+export type XrayResolvedMessage = {
+  type: "XRAY_RESOLVED";
+  requestId: string;
+  payload: {
+    title: string;
+    tmdbId?: number;
+    tmdbMediaType?: "movie" | "tv";
+    cast: XrayCastEntry[];
+  };
 };
 
 export type ResolveTitlePayload = {
@@ -121,5 +148,7 @@ export type ExtensionRuntimeMessage =
   | ExtensionMessage
   | ResolveOverlayDataMessage
   | OverlayDataResolvedMessage
+  | ResolveXrayMessage
+  | XrayResolvedMessage
   | LetterboxdIndexUpdatedMessage
   | LetterboxdIndexUpdatedAckMessage;
