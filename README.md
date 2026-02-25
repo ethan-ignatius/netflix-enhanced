@@ -3,6 +3,14 @@
 ## Overview
 Netflix + Letterboxd is a Manifest V3 Chrome extension that overlays Letterboxd-informed insights on Netflix expanded title cards. It uses your Letterboxd export ZIP for local personalization and TMDb for community ratings.
 
+## Preview
+
+<p align="center">
+  <img src="./docs/images/overlay-preview.png" width="750" />
+  <br />
+  <em>Overlay with TMDb community rating and Letterboxd-powered match insights.</em>
+</p>
+
 ## Architecture
 - Content script detects the expanded Netflix jawbone card and injects a Shadow DOM UI.
 - Background service worker resolves titles via TMDb, merges Letterboxd signals, and computes match scores.
