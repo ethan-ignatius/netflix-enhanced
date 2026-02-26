@@ -1,4 +1,4 @@
-app = "netflix-letterboxd-api" # change to your Fly app name
+app = "netflix-enhanced" # change to your Fly app name
 primary_region = "iad"         # change to your nearest region, e.g. iad, ord, lhr
 
 [http_service]
