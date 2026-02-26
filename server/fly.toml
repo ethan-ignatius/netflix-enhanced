@@ -1,0 +1,10 @@
+app = "netflix-letterboxd-api" # change to your Fly app name
+primary_region = "iad"         # change to your nearest region, e.g. iad, ord, lhr
+
+[http_service]
+  internal_port = 3782
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+
