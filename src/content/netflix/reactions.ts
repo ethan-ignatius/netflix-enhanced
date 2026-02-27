@@ -1,4 +1,4 @@
-import type { ReactionEvent, ReactionType } from "../../shared/types";
+import type { ReactionEvent, ReactionTimeline, ReactionType } from "../../shared/types";
 import { mountEmotionTimeline, hideEmotionTimeline } from "../ui/emotion-timeline";
 import { detectActiveTitleContext } from "./selectors";
 
@@ -77,6 +77,14 @@ const spawnFloatingEmoji = (type: ReactionType) => {
 };
 
 let helpPanelHost: HTMLDivElement | null = null;
+let hoverHideTimer: number | null = null;
+let hoverSettleMountTimer: number | null = null;
+let lastTimelineMountAt = 0;
+let hoverContainer: HTMLElement | null = null;
+
+const HOVER_HIDE_DELAY_MS = 1700;
+const MOUNT_THROTTLE_MS = 260;
+const MOUNT_SETTLE_DELAY_MS = 120;
 
 const ensureHelpPanel = () => {
   if (helpPanelHost && helpPanelHost.isConnected) return;
@@ -84,33 +92,41 @@ const ensureHelpPanel = () => {
   if (!container) return;
   const host = document.createElement("div");
   host.style.position = "absolute";
-  host.style.right = "16px";
-  host.style.bottom = "80px";
+  host.style.right = "20px";
+  host.style.top = "50%";
+  host.style.bottom = "auto";
+  host.style.transform = "translateY(-50%)";
   host.style.zIndex = "2147483646";
   host.style.pointerEvents = "none";
 
   const panel = document.createElement("div");
-  panel.style.pointerEvents = "auto";
-  panel.style.background = "rgba(0,0,0,0.88)";
-  panel.style.borderRadius = "12px";
-  panel.style.border = "1px solid rgba(255,255,255,0.18)";
-  panel.style.padding = "10px 12px";
+  panel.style.pointerEvents = "none";
+  panel.style.background = "transparent";
+  panel.style.border = "none";
+  panel.style.padding = "0";
   panel.style.fontFamily =
-    '"Netflix Sans", "Helvetica Neue", Helvetica, Arial, sans-serif';
+    '"Netflix Sans", "Netflix Sans Icon", "Helvetica Neue", Helvetica, Arial, sans-serif';
   panel.style.fontSize = "11px";
   panel.style.color = "rgba(255,255,255,0.9)";
-  panel.style.boxShadow = "0 8px 24px rgba(0,0,0,0.5)";
+  panel.style.textShadow = "0 2px 8px rgba(0,0,0,0.8)";
+  panel.style.maxWidth = "300px";
+  panel.style.display = "flex";
+  panel.style.flexDirection = "column";
+  panel.style.alignItems = "center";
 
   const title = document.createElement("div");
-  title.textContent = "Reactions (press while watching)";
-  title.style.fontWeight = "600";
-  title.style.marginBottom = "6px";
+  title.textContent = "Press while watching!";
+  title.style.fontWeight = "700";
+  title.style.fontSize = "16px";
+  title.style.marginBottom = "10px";
+  title.style.letterSpacing = "0.25px";
+  title.style.textAlign = "center";
 
   const list = document.createElement("div");
-  list.style.display = "grid";
-  list.style.gridTemplateColumns = "auto 1fr";
-  list.style.rowGap = "4px";
-  list.style.columnGap = "6px";
+  list.style.display = "flex";
+  list.style.flexDirection = "column";
+  list.style.alignItems = "center";
+  list.style.gap = "10px";
 
   const keyPairs: Array<[string, ReactionType]> = [
     ["L", "laugh"],
@@ -124,15 +140,34 @@ const ensureHelpPanel = () => {
 
   keyPairs.forEach(([keyLabel, type]) => {
     const emoji = REACTION_EMOJI[type];
-    const keyEl = document.createElement("div");
-    keyEl.textContent = `${emoji}  ${keyLabel}`;
-    keyEl.style.whiteSpace = "nowrap";
-    const label = document.createElement("div");
+    const row = document.createElement("div");
+    row.style.display = "flex";
+    row.style.alignItems = "center";
+    row.style.justifyContent = "center";
+    row.style.gap = "8px";
+    row.style.whiteSpace = "nowrap";
+
+    const emojiEl = document.createElement("span");
+    emojiEl.textContent = emoji;
+    emojiEl.style.fontSize = "18px";
+    emojiEl.style.lineHeight = "1";
+
+    const keyEl = document.createElement("span");
+    keyEl.textContent = `Press ${keyLabel}`;
+    keyEl.style.fontWeight = "700";
+    keyEl.style.fontSize = "13px";
+    keyEl.style.letterSpacing = "0.25px";
+
+    const label = document.createElement("span");
     label.textContent = type;
     label.style.textTransform = "capitalize";
-    label.style.opacity = "0.75";
-    list.appendChild(keyEl);
-    list.appendChild(label);
+    label.style.fontSize = "13px";
+    label.style.opacity = "0.92";
+
+    row.appendChild(emojiEl);
+    row.appendChild(keyEl);
+    row.appendChild(label);
+    list.appendChild(row);
   });
 
   panel.appendChild(title);
@@ -149,6 +184,66 @@ const setHelpPanelVisible = (visible: boolean) => {
 };
 
 const isWatchPage = (): boolean => window.location.pathname.includes("/watch/");
+
+const clearOverlayTimers = () => {
+  if (hoverHideTimer !== null) {
+    window.clearTimeout(hoverHideTimer);
+    hoverHideTimer = null;
+  }
+  if (hoverSettleMountTimer !== null) {
+    window.clearTimeout(hoverSettleMountTimer);
+    hoverSettleMountTimer = null;
+  }
+};
+
+const requestTimelineMount = (force = false) => {
+  const now = Date.now();
+  if (!force && now - lastTimelineMountAt < MOUNT_THROTTLE_MS) return;
+  lastTimelineMountAt = now;
+  void mountEmotionTimeline();
+};
+
+const showHoverTimeline = () => {
+  if (!isWatchPage()) return;
+  const video = getMainVideo();
+  if (!video || video.paused || video.ended) return;
+
+  ensureHelpPanel();
+  setHelpPanelVisible(true);
+  requestTimelineMount();
+
+  if (hoverSettleMountTimer !== null) window.clearTimeout(hoverSettleMountTimer);
+  hoverSettleMountTimer = window.setTimeout(() => {
+    const activeVideo = getMainVideo();
+    if (!activeVideo || activeVideo.paused || activeVideo.ended || !isWatchPage()) return;
+    requestTimelineMount(true);
+  }, MOUNT_SETTLE_DELAY_MS);
+
+  if (hoverHideTimer !== null) window.clearTimeout(hoverHideTimer);
+  hoverHideTimer = window.setTimeout(() => {
+    const activeVideo = getMainVideo();
+    if (!activeVideo || activeVideo.paused || activeVideo.ended) return;
+    setHelpPanelVisible(false);
+    hideEmotionTimeline();
+  }, HOVER_HIDE_DELAY_MS);
+};
+
+const hideHoverTimeline = () => {
+  const video = getMainVideo();
+  if (!video || video.paused || video.ended) return;
+  clearOverlayTimers();
+  setHelpPanelVisible(false);
+  hideEmotionTimeline();
+};
+
+const bindHoverReveal = () => {
+  const container = getPlayerContainer();
+  if (!container || container === hoverContainer) return;
+  hoverContainer = container;
+  container.addEventListener("mousemove", showHoverTimeline, { passive: true });
+  container.addEventListener("mouseenter", showHoverTimeline, { passive: true });
+  container.addEventListener("mouseleave", hideHoverTimeline);
+};
 
 const getActiveTitleId = (): string | null => {
   const match = window.location.pathname.match(/\/watch\/(\d+)/);
@@ -174,11 +269,14 @@ export const initReactionCapture = () => {
     if (!isWatchPage()) return;
 
     ensureHelpPanel();
+    bindHoverReveal();
     video.addEventListener("pause", () => {
+      clearOverlayTimers();
       setHelpPanelVisible(true);
-      void mountEmotionTimeline();
+      requestTimelineMount(true);
     });
     video.addEventListener("play", () => {
+      clearOverlayTimers();
       setHelpPanelVisible(false);
       hideEmotionTimeline();
     });
@@ -186,6 +284,8 @@ export const initReactionCapture = () => {
 
   // Initial attach if we're already on a watch page.
   if (isWatchPage()) {
+    ensureHelpPanel();
+    bindHoverReveal();
     const video = getMainVideo();
     if (video) attachToVideo(video);
   }
@@ -193,6 +293,8 @@ export const initReactionCapture = () => {
   // Observe DOM for route changes and new video elements (SPA navigation).
   const observer = new MutationObserver(() => {
     if (!isWatchPage()) return;
+    ensureHelpPanel();
+    bindHoverReveal();
     const video = getMainVideo();
     if (video) attachToVideo(video);
   });
@@ -248,4 +350,3 @@ export const requestReactionTimeline = async (
     return null;
   }
 };
-

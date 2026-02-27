@@ -3,7 +3,10 @@ import { requestReactionTimeline } from "../netflix/reactions";
 import { log } from "../../shared/logger";
 
 const TIMELINE_HOST_ID = "nxlb-reaction-timeline";
-const GRAPH_MAX_HEIGHT = 40; // px – max graph height like YouTube's "most replayed"
+const GRAPH_MAX_HEIGHT = 104; // px – intentionally tall for stronger color contrast.
+const GRAPH_VERTICAL_PADDING = 6;
+const GRAPH_CURVE_GAMMA = 0.62;
+const GRAPH_MIN_VISIBLE_FRACTION = 0.16;
 
 // --- Emoji map for tooltips ---
 
@@ -61,7 +64,8 @@ const blendEmotionColor = (weights: EmotionWeights, alpha: number): string => {
   const b = Math.round(
     weights.green * COLOR_GREEN[2] + weights.red * COLOR_RED[2] + weights.blue * COLOR_BLUE[2]
   );
-  return `rgba(${r}, ${g}, ${b}, ${Math.max(0.2, Math.min(0.85, alpha))})`;
+  if (alpha <= 0) return `rgba(${r}, ${g}, ${b}, 0)`;
+  return `rgba(${r}, ${g}, ${b}, ${Math.max(0.35, Math.min(0.95, alpha * 1.1))})`;
 };
 
 // --- Catmull-Rom spline → cubic Bezier conversion ---
@@ -83,12 +87,16 @@ const buildGraphPoints = (
   maxIntensity: number
 ): GraphPoint[] => {
   const bucketW = canvasW / buckets.length;
+  const availableH = Math.max(1, GRAPH_MAX_HEIGHT - GRAPH_VERTICAL_PADDING);
   return buckets.map((bucket, i) => {
     const x = (i + 0.5) * bucketW;
     const norm = maxIntensity > 0 ? bucket.intensity / maxIntensity : 0;
-    const y = bucket.count > 0 ? norm * GRAPH_MAX_HEIGHT : 0;
+    const boostedNorm = norm > 0 ? Math.pow(norm, GRAPH_CURVE_GAMMA) : 0;
+    const visibleNorm =
+      bucket.count > 0 ? Math.max(GRAPH_MIN_VISIBLE_FRACTION, boostedNorm) : 0;
+    const y = visibleNorm * availableH;
     const weights = computeEmotionWeights(bucket);
-    const color = blendEmotionColor(weights, norm);
+    const color = blendEmotionColor(weights, visibleNorm);
     return { x, y, color, bucket };
   });
 };
@@ -158,8 +166,8 @@ const drawGraph = (
   // --- Thin stroke on the top edge for definition ---
   ctx.beginPath();
   traceCurvePath(ctx, points, h);
-  ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
-  ctx.lineWidth = 1;
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.42)";
+  ctx.lineWidth = 1.2;
   ctx.stroke();
 };
 
