@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "start:server": "cd server && node --env-file=../.env index.js",
     "dev": "concurrently \"vite build --watch --mode content\" \"vite build --watch --mode app\"",
     "build": "vite build --mode content && vite build --mode app && cpx config/manifest.json dist",
     "lint": "eslint . --ext .ts",

@@ -61,9 +61,6 @@ const METADATA_TEXT_PATTERN =
 const ACTION_TEXT_PATTERN =
   /^(play|resume|continue|more info|details|watch|watch now|watch again|add|added|my list|remove|rate|like|dislike|thumbs up|thumbs down)$/i;
 const CONTEXT_TEXT_PATTERN = /because you watched/i;
-const SUBTITLE_LINE_PATTERN =
-  /(^["'\-]\s*[a-z]|\[[^\]]+\]|♪|^\s*-\s*[a-z]|[a-z][.!?]\s*$)/i;
-const SUBTITLE_MULTI_SENTENCE_PATTERN = /[a-z][.!?]\s+[A-Z][a-z]/;
 
 const METADATA_SELECTORS = [
   "[data-uia*='maturity-rating']",
@@ -305,8 +302,6 @@ const isBannedTitleText = (text: string) => {
   if (ACTION_TEXT_PATTERN.test(text.trim())) return true;
   if (CONTEXT_TEXT_PATTERN.test(text)) return true;
   if (METADATA_TEXT_PATTERN.test(text)) return true;
-  if (SUBTITLE_LINE_PATTERN.test(text)) return true;
-  if (SUBTITLE_MULTI_SENTENCE_PATTERN.test(text)) return true;
   return (
     EPISODE_TITLE_PATTERN.test(text) ||
     EPISODE_TIME_PATTERN.test(text) ||
@@ -484,55 +479,19 @@ const extractMetadataInfo = (root: HTMLElement): { year?: number; isSeries?: boo
   return { year, isSeries };
 };
 
-const cleanExtractedTitleCandidate = (text: string): string => {
-  return text
-    .replace(/\s*[-|:]\s*season\s+\d+.*$/i, "")
-    .replace(/\s*season\s+\d+.*$/i, "")
-    .replace(/\s*[-|:]\s*part\s+\d+.*$/i, "")
-    .replace(/\s*[-|:]\s*(official\s+)?trailer.*$/i, "")
-    .replace(/\s+/g, " ")
-    .trim();
-};
-
-const scoreExtractedTitleCandidate = (text: string): number => {
-  const normalized = normalizeTitle(text);
-  if (!normalized) return Number.NEGATIVE_INFINITY;
-  const words = normalized.split(" ").filter(Boolean);
-  let score = words.length * 12;
-  if (words.length === 1) score -= 20;
-  if (text.length >= 8) score += 8;
-  if (text.length >= 14) score += 8;
-  if (/\d/.test(text)) score -= 8;
-  return score;
-};
-
 const extractTitleFromAnchor = (anchor: HTMLAnchorElement): string | undefined => {
-  const prioritizedGroups: Array<Array<string | null | undefined>> = [
-    [
-      anchor.getAttribute("aria-label"),
-      anchor.getAttribute("title"),
-      (anchor.querySelector("img[alt]") as HTMLImageElement | null)?.alt,
-      (anchor.querySelector("[aria-label]") as HTMLElement | null)?.getAttribute("aria-label")
-    ],
-    [anchor.textContent]
+  const candidates: Array<string | null | undefined> = [
+    anchor.getAttribute("aria-label"),
+    anchor.getAttribute("title"),
+    (anchor.querySelector("img[alt]") as HTMLImageElement | null)?.alt,
+    (anchor.querySelector("[aria-label]") as HTMLElement | null)?.getAttribute("aria-label"),
+    anchor.textContent
   ];
-
-  let best: { text: string; score: number } | null = null;
-  for (const group of prioritizedGroups) {
-    for (const candidate of group) {
-      const text = normalizeText(candidate);
-      if (!text) continue;
-      const cleaned = cleanExtractedTitleCandidate(text);
-      if (!cleaned) continue;
-      if (isBannedTitleText(cleaned)) continue;
-      const score = scoreExtractedTitleCandidate(cleaned);
-      if (!best || score > best.score) {
-        best = { text: cleaned, score };
-      }
-    }
-    if (best) {
-      return best.text;
-    }
+  for (const candidate of candidates) {
+    const text = normalizeText(candidate);
+    if (!text) continue;
+    if (isBannedTitleText(text)) continue;
+    return text;
   }
   return undefined;
 };
@@ -543,22 +502,17 @@ const extractTitleFromElement = (el: Element): string | undefined => {
     h.getAttribute?.("aria-label") ?? undefined,
     h.getAttribute?.("data-uia-title") ?? undefined,
     h.getAttribute?.("title") ?? undefined,
-    (h.querySelector?.("img[alt]") as HTMLImageElement | null)?.alt
+    (h.querySelector?.("img[alt]") as HTMLImageElement | null)?.alt,
+    h.textContent
   ];
-  let best: { text: string; score: number } | null = null;
   for (const candidate of candidates) {
     const text = normalizeText(candidate);
     if (!text) continue;
-    const cleaned = cleanExtractedTitleCandidate(text);
-    if (!cleaned) continue;
-    if (isBannedTitleText(cleaned)) continue;
+    if (isBannedTitleText(text)) continue;
     if (isInHeaderRegion(h)) continue;
-    const score = scoreExtractedTitleCandidate(cleaned);
-    if (!best || score > best.score) {
-      best = { text: cleaned, score };
-    }
+    return text;
   }
-  return best?.text;
+  return undefined;
 };
 
 const getBestTitleAnchor = (

@@ -1,5 +1,5 @@
 import { log } from "../../shared/logger";
-import { PROXY_BASE_URL, STORAGE_KEYS } from "../../shared/constants";
+import { STORAGE_KEYS } from "../../shared/constants";
 import {
   buildLegacyLetterboxdKey,
   buildLetterboxdKey,
@@ -7,29 +7,9 @@ import {
 } from "../../shared/normalize";
 import type { ExtractedTitleInfo, LetterboxdIndex, ResolveTitleMessage } from "../../shared/types";
 import { getLetterboxdIndex as loadLetterboxdIndex } from "../../shared/storage";
-import {
-  getTmdbApiKey,
-  getTmdbFeatures,
-  getTmdbCacheSnapshot,
-  searchTmdbId
-} from "../tmdb";
 import { resolveTitle } from "../api-proxy";
 
 const PROFILE_TTL_MS = 24 * 60 * 60 * 1000;
-
-const buildTitleVariants = (title?: string): string[] => {
-  if (!title) return [];
-  const base = title.trim();
-  if (!base) return [];
-  const variants = new Set<string>([base]);
-  const colon = base.split(":")[0]?.trim();
-  const dash = base.split(" - ")[0]?.trim();
-  const pipe = base.split("|")[0]?.trim();
-  if (colon && colon.length >= 2) variants.add(colon);
-  if (dash && dash.length >= 2) variants.add(dash);
-  if (pipe && pipe.length >= 2) variants.add(pipe);
-  return Array.from(variants);
-};
 
 type MatchProfile = {
   storedAt: number;
@@ -37,6 +17,14 @@ type MatchProfile = {
   meanRating: number;
   genreStats: Record<string, { avg: number; count: number; strength: number }>;
   decadeStats: Record<string, { avg: number; count: number; strength: number }>;
+};
+
+const hasProfileSignal = (profile: MatchProfile | null): profile is MatchProfile => {
+  if (!profile) return false;
+  return (
+    Object.keys(profile.genreStats ?? {}).length > 0 ||
+    Object.keys(profile.decadeStats ?? {}).length > 0
+  );
 };
 
 const getLetterboxdIndex = async (): Promise<LetterboxdIndex | null> => {
@@ -75,21 +63,19 @@ export const resolveLetterboxdEntry = async (
   });
   const payloadTitle = "rawTitle" in payload ? payload.rawTitle : payload.titleText;
   const payloadYear = "rawTitle" in payload ? payload.year ?? undefined : payload.year;
-  const payloadVariants = buildTitleVariants(payloadTitle);
-  const resolvedVariants = buildTitleVariants(resolvedTitle);
 
   const keys = [
-    ...payloadVariants.map((title) => buildLetterboxdKey(title, payloadYear)),
-    ...resolvedVariants.map((title) => buildLetterboxdKey(title, resolvedYear)),
-    ...payloadVariants.map((title) => buildLetterboxdKey(title, undefined)),
-    ...resolvedVariants.map((title) => buildLetterboxdKey(title, undefined))
-  ].filter(Boolean);
+    buildLetterboxdKey(payloadTitle, payloadYear),
+    buildLetterboxdKey(resolvedTitle, resolvedYear),
+    buildLetterboxdKey(payloadTitle, undefined),
+    buildLetterboxdKey(resolvedTitle, undefined)
+  ].filter((key) => key);
   const legacyKeys = [
-    ...payloadVariants.map((title) => buildLegacyLetterboxdKey(title, payloadYear)),
-    ...resolvedVariants.map((title) => buildLegacyLetterboxdKey(title, resolvedYear)),
-    ...payloadVariants.map((title) => buildLegacyLetterboxdKey(title, undefined)),
-    ...resolvedVariants.map((title) => buildLegacyLetterboxdKey(title, undefined))
-  ].filter(Boolean);
+    buildLegacyLetterboxdKey(payloadTitle, payloadYear),
+    buildLegacyLetterboxdKey(resolvedTitle, resolvedYear),
+    buildLegacyLetterboxdKey(payloadTitle, undefined),
+    buildLegacyLetterboxdKey(resolvedTitle, undefined)
+  ].filter((key) => key);
   const attemptedKeys = Array.from(new Set([...keys, ...legacyKeys]));
   log("LB_MATCH_KEYS", { attemptedKeys });
 
@@ -110,8 +96,16 @@ export const resolveLetterboxdEntry = async (
 export const buildMatchProfile = async (): Promise<MatchProfile | null> => {
   const stats = await getLetterboxdStats();
   const cached = await getMatchProfileCache();
+  if (cached && !hasProfileSignal(cached)) {
+    log("LB_MATCH_PROFILE_INVALIDATED", {
+      reason: "empty-profile",
+      storedAt: cached.storedAt
+    });
+    await chrome.storage.local.remove([STORAGE_KEYS.MATCH_PROFILE]);
+  }
   if (
     cached &&
+    hasProfileSignal(cached) &&
     Date.now() - cached.storedAt < PROFILE_TTL_MS &&
     cached.lastImportAt &&
     stats?.importedAt &&
@@ -125,11 +119,6 @@ export const buildMatchProfile = async (): Promise<MatchProfile | null> => {
   const entries = Object.entries(index.ratingsByKey);
   if (!entries.length) return null;
 
-  const useProxy = Boolean(PROXY_BASE_URL?.trim());
-  const apiKey = useProxy ? null : await getTmdbApiKey();
-  if (!useProxy && !apiKey) return null;
-
-  const tmdbCache = await getTmdbCacheSnapshot();
   let ratingSum = 0;
   let ratingCount = 0;
   const genreTotals: Record<string, { sum: number; count: number }> = {};
@@ -143,46 +132,20 @@ export const buildMatchProfile = async (): Promise<MatchProfile | null> => {
     const { title, year } = parseLetterboxdKey(key);
     if (!title) continue;
 
-    let genres: string[] = [];
-    let releaseYear: number | undefined;
+    const resolved = await resolveTitle({
+      titleText: title,
+      year: year ?? undefined
+    });
+    const genres = resolved.tmdbGenres ?? [];
+    if (!genres.length) continue;
 
-    if (useProxy) {
-      try {
-        const resolved = await resolveTitle({
-          rawTitle: title,
-          normalizedTitle: title,
-          year: year ?? null,
-          isSeries: undefined,
-          netflixId: null,
-          href: null
-        });
-        genres = resolved.tmdbGenres ?? [];
-        releaseYear = resolved.releaseYear ?? year ?? undefined;
-      } catch {
-        continue;
-      }
-    } else {
-      const searchResult = await searchTmdbId(apiKey!, title, year, tmdbCache);
-      if (!searchResult) continue;
-      const features = await getTmdbFeatures(
-        apiKey!,
-        searchResult.tmdbId,
-        searchResult.mediaType
-      );
-      if (!features) continue;
-      releaseYear = features.releaseYear ?? searchResult.releaseYear ?? year;
-      genres = features.genres ?? [];
-    }
-
-    const decade = releaseYear
-      ? `${Math.floor(releaseYear / 10) * 10}s`
-      : undefined;
+    const releaseYear = resolved.releaseYear ?? year;
+    const decade = releaseYear ? `${Math.floor(releaseYear / 10) * 10}s` : undefined;
 
     genres.forEach((genre) => {
-      const g = genre.toLowerCase();
-      if (!genreTotals[g]) genreTotals[g] = { sum: 0, count: 0 };
-      genreTotals[g].sum += rating;
-      genreTotals[g].count += 1;
+      if (!genreTotals[genre]) genreTotals[genre] = { sum: 0, count: 0 };
+      genreTotals[genre].sum += rating;
+      genreTotals[genre].count += 1;
     });
 
     if (decade) {
@@ -222,7 +185,19 @@ export const buildMatchProfile = async (): Promise<MatchProfile | null> => {
     decadeStats
   };
 
+  if (!hasProfileSignal(profile)) {
+    log("LB_MATCH_PROFILE_EMPTY_SKIP_CACHE", {
+      ratingsCount: entries.length,
+      meanRating: profile.meanRating
+    });
+    return null;
+  }
+
   await setMatchProfileCache(profile);
+  log("LB_MATCH_PROFILE_BUILT", {
+    genreCount: Object.keys(profile.genreStats).length,
+    decadeCount: Object.keys(profile.decadeStats).length
+  });
   return profile;
 };
 

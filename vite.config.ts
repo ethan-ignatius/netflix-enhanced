@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import { resolve } from "node:path";
 
 const rootDir = "src";
@@ -23,11 +23,6 @@ const contentConfig = {
 
 const appConfig = {
   root: rootDir,
-  define: {
-    "import.meta.env.VITE_PROXY_BASE_URL": JSON.stringify(
-      process.env.VITE_PROXY_BASE_URL ?? ""
-    )
-  },
   resolve: {
     alias: {
       "modern-face-api": resolve(__dirname, "node_modules/modern-face-api/build/commonjs/index.js")
@@ -53,6 +48,13 @@ const appConfig = {
 };
 
 export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), "");
+
   if (mode === "content") return contentConfig;
-  return appConfig;
+  return {
+    ...appConfig,
+    define: {
+      "import.meta.env.VITE_PROXY_BASE_URL": JSON.stringify(env.VITE_PROXY_BASE_URL ?? "")
+    }
+  };
 });

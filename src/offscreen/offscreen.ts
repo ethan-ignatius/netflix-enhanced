@@ -12,10 +12,6 @@ let modelsLoaded = false;
 let video: HTMLVideoElement | null = null;
 let canvas: HTMLCanvasElement | null = null;
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function getModelsBase(): string {
   try {
     return chrome?.runtime?.getURL?.("models/") ?? MODEL_BASE_CDN;
@@ -54,36 +50,35 @@ function createVideoAndCanvas(): void {
 async function captureFrameFromStream(stream: MediaStream): Promise<ImageData | null> {
   createVideoAndCanvas();
   if (!video || !canvas) return null;
-  const captureVideo = video;
-  captureVideo.srcObject = stream;
+  video.srcObject = stream;
   try {
-    await captureVideo.play();
+    await video.play();
   } catch {
     return null;
   }
   await new Promise<void>((resolve, reject) => {
     const onLoaded = () => {
-      captureVideo.removeEventListener("loadeddata", onLoaded);
-      captureVideo.removeEventListener("error", onError);
+      video?.removeEventListener("loadeddata", onLoaded);
+      video?.removeEventListener("error", onError);
       resolve();
     };
     const onError = () => {
-      captureVideo.removeEventListener("loadeddata", onLoaded);
-      captureVideo.removeEventListener("error", onError);
+      video?.removeEventListener("loadeddata", onLoaded);
+      video?.removeEventListener("error", onError);
       reject(new Error("Video load error"));
     };
-    captureVideo.addEventListener("loadeddata", onLoaded, { once: true });
-    captureVideo.addEventListener("error", onError, { once: true });
+    video.addEventListener("loadeddata", onLoaded, { once: true });
+    video.addEventListener("error", onError, { once: true });
     setTimeout(() => resolve(), 500);
   });
 
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
-  const w = Math.min(captureVideo.videoWidth, CAPTURE_MAX_WIDTH);
-  const h = Math.min(captureVideo.videoHeight, CAPTURE_MAX_HEIGHT);
+  const w = Math.min(video.videoWidth, CAPTURE_MAX_WIDTH);
+  const h = Math.min(video.videoHeight, CAPTURE_MAX_HEIGHT);
   canvas.width = w;
   canvas.height = h;
-  ctx.drawImage(captureVideo, 0, 0, w, h);
+  ctx.drawImage(video, 0, 0, w, h);
   try {
     return ctx.getImageData(0, 0, w, h);
   } catch {
@@ -99,39 +94,14 @@ async function captureFrameFromStreamId(streamId: string): Promise<ImageData | n
       mandatory: {
         chromeMediaSource: "tab",
         chromeMediaSourceId: streamId
-      }
-    } as unknown as MediaTrackConstraints
+      } as unknown as MediaTrackConstraints
+    }
   });
   try {
     return await captureFrameFromStream(stream);
   } finally {
     stream.getTracks().forEach((t) => t.stop());
   }
-}
-
-function isLikelyBlackFrame(imageData: ImageData): boolean {
-  const { data, width, height } = imageData;
-  if (!width || !height) return false;
-
-  let darkPixels = 0;
-  let sampled = 0;
-  let maxChannel = 0;
-  const stride = Math.max(1, Math.floor((width * height) / 20000));
-
-  for (let i = 0; i < data.length; i += 4 * stride) {
-    const r = data[i];
-    const g = data[i + 1];
-    const b = data[i + 2];
-    sampled += 1;
-    if (r <= 8 && g <= 8 && b <= 8) darkPixels += 1;
-    if (r > maxChannel) maxChannel = r;
-    if (g > maxChannel) maxChannel = g;
-    if (b > maxChannel) maxChannel = b;
-  }
-
-  if (!sampled) return false;
-  const darkRatio = darkPixels / sampled;
-  return darkRatio >= 0.998 && maxChannel <= 12;
 }
 
 type FaceCrop = { base64: string; box: { x: number; y: number; width: number; height: number } };
@@ -183,9 +153,7 @@ async function detectAndCropFaces(
   return results;
 }
 
-async function processStreamId(
-  streamId: string
-): Promise<{ faces: FaceCrop[]; error?: string; drmBlocked?: boolean }> {
+async function processStreamId(streamId: string): Promise<{ faces: FaceCrop[]; error?: string }> {
   const loaded = await loadModels();
   if (!loaded) {
     return { faces: [], error: "Models failed to load" };
@@ -194,19 +162,6 @@ async function processStreamId(
   let imageData: ImageData | null = null;
   try {
     imageData = await captureFrameFromStreamId(streamId);
-    if (imageData && isLikelyBlackFrame(imageData)) {
-      await sleep(180);
-      const retry = await captureFrameFromStreamId(streamId);
-      if (retry && !isLikelyBlackFrame(retry)) {
-        imageData = retry;
-      } else {
-        return {
-          faces: [],
-          drmBlocked: true,
-          error: "Protected video frame (DRM)"
-        };
-      }
-    }
   } catch (e) {
     return { faces: [], error: (e as Error).message };
   }

@@ -103,43 +103,13 @@ function buildPanel(): HTMLElement {
 }
 
 let panelEl: HTMLElement | null = null;
-let panelRootDoc: Document | null = null;
-let panelContainer: HTMLElement | null = null;
-
-function getRootDocument(): Document {
-  try {
-    if (window.top && window.top !== window && window.top.document) {
-      return window.top.document;
-    }
-  } catch {
-    // Cross-origin access can throw; fallback to current document.
-  }
-  return document;
-}
-
-function getPanelContainer(doc: Document): HTMLElement {
-  const fullscreenEl = doc.fullscreenElement as HTMLElement | null;
-  if (fullscreenEl) return fullscreenEl;
-  return doc.documentElement;
-}
 
 function ensurePanel(): HTMLElement {
-  const rootDoc = getRootDocument();
-  const container = getPanelContainer(rootDoc);
-  const shouldRecreate =
-    !panelEl ||
-    !panelEl.isConnected ||
-    panelRootDoc !== rootDoc ||
-    panelContainer !== container;
-
-  if (shouldRecreate) {
-    if (panelEl?.isConnected) panelEl.remove();
+  if (!panelEl || !panelEl.isConnected) {
     panelEl = buildPanel();
-    container.appendChild(panelEl);
-    panelRootDoc = rootDoc;
-    panelContainer = container;
+    document.documentElement.appendChild(panelEl);
   }
-  return panelEl as HTMLElement;
+  return panelEl;
 }
 
 function getListEl(): HTMLElement | null {
@@ -207,16 +177,9 @@ export function showXrayError(message: string): void {
 }
 
 export function hideXrayPanel(): void {
-  if (panelEl?.isConnected) {
-    panelEl.remove();
-  } else {
-    const rootDoc = getRootDocument();
-    const el = rootDoc.getElementById(PANEL_ID);
-    if (el) el.remove();
-  }
+  const el = document.getElementById(PANEL_ID);
+  if (el) el.remove();
   panelEl = null;
-  panelRootDoc = null;
-  panelContainer = null;
 }
 
 function escapeHtml(s: string): string {

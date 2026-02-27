@@ -56,34 +56,10 @@ function waitForPort(timeoutMs: number): Promise<chrome.runtime.Port> {
   });
 }
 
-function getTabStreamId(tabId: number): Promise<string> {
-  return new Promise((resolve, reject) => {
-    chrome.tabCapture.getMediaStreamId(
-      {
-        targetTabId: tabId,
-        consumerTabId: tabId
-      },
-      (streamId) => {
-        const lastError = chrome.runtime.lastError;
-        if (lastError) {
-          reject(new Error(lastError.message));
-          return;
-        }
-        if (!streamId) {
-          reject(new Error("No media stream ID returned"));
-          return;
-        }
-        resolve(streamId);
-      }
-    );
-  });
-}
-
 export async function analyzeFrame(payload: AnalyzeFramePayload): Promise<{
   actors: XraySceneActor[];
   noFaces?: boolean;
   drmBlocked?: boolean;
-  permissionRequired?: boolean;
   error?: string;
 }> {
   let { tmdbId: titleId, tmdbMediaType } = payload;
@@ -116,18 +92,16 @@ export async function analyzeFrame(payload: AnalyzeFramePayload): Promise<{
 
   let streamId: string;
   try {
-    streamId = await getTabStreamId(payload.tabId);
+    streamId = await chrome.tabCapture.getMediaStreamId({
+      targetTabId: payload.tabId,
+      consumerTabId: undefined
+    });
   } catch (e) {
-    const message = (e as Error).message ?? "Capture failed";
-    const permissionRequired =
-      /invok|gesture|activeTab|permission|allow|not allowed|grant/i.test(message);
-    const drmBlocked = /drm|protected/i.test(message);
     log("tabCapture.getMediaStreamId failed", e);
     return {
       actors: [],
-      drmBlocked,
-      permissionRequired,
-      error: message
+      drmBlocked: true,
+      error: (e as Error).message
     };
   }
 
@@ -141,18 +115,13 @@ export async function analyzeFrame(payload: AnalyzeFramePayload): Promise<{
     return { actors: [], error: "Offscreen not ready" };
   }
 
-  const processed = await new Promise<{
-    faces: ProcessedFace[];
-    error?: string;
-    drmBlocked?: boolean;
-  }>((resolve) => {
-    const handler = (msg: { type: string; faces?: ProcessedFace[]; error?: string; drmBlocked?: boolean }) => {
+  const processed = await new Promise<{ faces: ProcessedFace[]; error?: string }>((resolve) => {
+    const handler = (msg: { type: string; faces?: ProcessedFace[]; error?: string }) => {
       if (msg.type === "FRAME_PROCESSED") {
         port.onMessage.removeListener(handler);
         resolve({
           faces: msg.faces ?? [],
-          error: msg.error,
-          drmBlocked: msg.drmBlocked
+          error: msg.error
         });
       }
     };
@@ -161,16 +130,9 @@ export async function analyzeFrame(payload: AnalyzeFramePayload): Promise<{
   });
 
   if (processed.error) {
-    const isDrmBlocked =
-      processed.drmBlocked ||
-      /drm|protected/i.test(processed.error);
-    const permissionRequired =
-      /invok|gesture|activeTab|permission|allow|not allowed|grant/i.test(processed.error);
     return {
       actors: [],
       error: processed.error,
-      drmBlocked: isDrmBlocked,
-      permissionRequired,
       noFaces: processed.faces?.length === 0
     };
   }
