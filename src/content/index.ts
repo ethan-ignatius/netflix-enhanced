@@ -3,8 +3,16 @@ import { initNetflixObserver } from "./netflix/observer";
 import { initXrayWatch } from "./netflix/xray-watch";
 
 const init = async () => {
-  await initNetflixObserver();
-  await initXrayWatch();
+  try {
+    await initNetflixObserver();
+  } catch (err) {
+    log("initNetflixObserver failed", err);
+  }
+  try {
+    await initXrayWatch();
+  } catch (err) {
+    log("initXrayWatch failed", err);
+  }
 };
 
 if (document.readyState === "loading") {

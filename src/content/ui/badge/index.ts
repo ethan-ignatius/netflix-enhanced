@@ -1,4 +1,5 @@
 import { log } from "../../../shared/logger";
+import { isExtensionContextValid } from "../../../shared/extension-context";
 
 const BADGE_ID = "nxlb-status-badge";
 
@@ -93,6 +94,7 @@ const buildBadgeHost = () => {
 };
 
 export const setBadgeVisible = (enabled: boolean) => {
+  if (!isExtensionContextValid()) return;
   const existing = document.getElementById(BADGE_ID);
   if (!enabled) {
     if (existing) {

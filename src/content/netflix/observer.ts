@@ -1,5 +1,6 @@
 import { log, DEBUG } from "../../shared/logger";
 import { STORAGE_KEYS } from "../../shared/constants";
+import { isExtensionContextValid, isContextInvalidatedError } from "../../shared/extension-context";
 import { getStorage, setStorage } from "../../shared/storage";
 import { buildLetterboxdKey } from "../../shared/normalize";
 import type {
@@ -25,6 +26,7 @@ const OBSERVER_DEBOUNCE_MS = 250;
 const WATCHDOG_INTERVAL_MS = 2000;
 const HERO_WIDTH_THRESHOLD = 0.85;
 const HERO_HEIGHT_THRESHOLD = 0.6;
+const POINTER_STALE_MS = 2200;
 
 const overlayManager = createOverlayManager();
 
@@ -38,6 +40,7 @@ let lastOutlined: HTMLElement | null = null;
 let playbackActive = false;
 let lastResolvedPayload: OverlayData | null = null;
 let lastPointerTarget: Element | null = null;
+let lastPointerAt = 0;
 
 type NxlWindow = Window & {
   __nxlBooted?: boolean;
@@ -178,6 +181,10 @@ const buildEmptyOverlayData = (title: string, year?: number): OverlayData => ({
 
 const getPointerTarget = (): Element | null => {
   if (!lastPointerTarget) return null;
+  if (Date.now() - lastPointerAt > POINTER_STALE_MS) {
+    lastPointerTarget = null;
+    return null;
+  }
   if (!lastPointerTarget.isConnected) {
     lastPointerTarget = null;
     return null;
@@ -186,6 +193,7 @@ const getPointerTarget = (): Element | null => {
 };
 
 const attemptResolve = (reason: string) => {
+  if (!isExtensionContextValid()) return;
   if (!overlayEnabled) return;
   updatePlaybackState();
   if (playbackActive) return;
@@ -251,49 +259,63 @@ const attemptResolve = (reason: string) => {
     year: extracted.year
   });
 
-  chrome.runtime
-    .sendMessage(message)
-    .then((response: OverlayDataResolvedMessage) => {
-      if (response?.type !== "OVERLAY_DATA_RESOLVED") return;
-      if (response.requestId !== lastRequestId) return;
-      lastResolvedPayload = response.payload;
-      log("OVERLAY_RESPONSE", {
-        requestId,
-        tmdb: response.payload.tmdb,
-        letterboxd: {
-          inWatchlist: response.payload.letterboxd?.inWatchlist ?? false,
-          userRating: response.payload.letterboxd?.userRating ?? null,
-          matchPercent: response.payload.letterboxd?.matchPercent ?? null,
-          becauseYouLikeCount: response.payload.letterboxd?.becauseYouLike?.length ?? 0
+  try {
+    if (!isExtensionContextValid()) return;
+    chrome.runtime
+      .sendMessage(message)
+      .then((response: OverlayDataResolvedMessage) => {
+        if (!isExtensionContextValid()) return;
+        if (response?.type !== "OVERLAY_DATA_RESOLVED") return;
+        if (response.requestId !== lastRequestId) return;
+        lastResolvedPayload = response.payload;
+        log("OVERLAY_RESPONSE", {
+          requestId,
+          tmdb: response.payload.tmdb,
+          letterboxd: {
+            inWatchlist: response.payload.letterboxd?.inWatchlist ?? false,
+            userRating: response.payload.letterboxd?.userRating ?? null,
+            matchPercent: response.payload.letterboxd?.matchPercent ?? null,
+            becauseYouLikeCount: response.payload.letterboxd?.becauseYouLike?.length ?? 0
+          }
+        });
+
+        overlayManager.update(response.payload);
+
+        if (DEBUG) {
+          const lb = response.payload.letterboxd;
+          if (!lb || (!lb.inWatchlist && lb.userRating === null)) {
+            const keyForLookup = buildLetterboxdKey(extracted.rawTitle, extracted.year ?? undefined);
+            if (!isExtensionContextValid()) return;
+            chrome.storage.local.get([STORAGE_KEYS.LETTERBOXD_INDEX]).then((data) => {
+              if (!isExtensionContextValid()) return;
+              if (!data[STORAGE_KEYS.LETTERBOXD_INDEX]) {
+                log("LB_MATCH_NOT_FOUND", { reason: "no-index", key: keyForLookup });
+              } else if (!extracted.year) {
+                log("LB_MATCH_NOT_FOUND", { reason: "missing-year", key: keyForLookup });
+              } else {
+                log("LB_MATCH_NOT_FOUND", { reason: "no-key", key: keyForLookup });
+              }
+            }).catch((e) => {
+              if (!isContextInvalidatedError(e)) log("LB_MATCH_DEBUG_FAILED", e);
+            });
+          }
         }
+      })
+      .catch((err) => {
+        if (isContextInvalidatedError(err)) return;
+        log("Title resolve failed", { requestId, err });
       });
-
-      overlayManager.update(response.payload);
-
-      if (DEBUG) {
-        const lb = response.payload.letterboxd;
-        if (!lb || (!lb.inWatchlist && lb.userRating === null)) {
-          const keyForLookup = buildLetterboxdKey(extracted.rawTitle, extracted.year ?? undefined);
-          chrome.storage.local.get([STORAGE_KEYS.LETTERBOXD_INDEX]).then((data) => {
-            if (!data[STORAGE_KEYS.LETTERBOXD_INDEX]) {
-              log("LB_MATCH_NOT_FOUND", { reason: "no-index", key: keyForLookup });
-            } else if (!extracted.year) {
-              log("LB_MATCH_NOT_FOUND", { reason: "missing-year", key: keyForLookup });
-            } else {
-              log("LB_MATCH_NOT_FOUND", { reason: "no-key", key: keyForLookup });
-            }
-          });
-        }
-      }
-    })
-    .catch((err) => {
-      log("Title resolve failed", { requestId, err });
-    });
+  } catch (err) {
+    if (isContextInvalidatedError(err)) return;
+    throw err;
+  }
 };
 
 const scheduleResolve = (reason: string) => {
+  if (!isExtensionContextValid()) return;
   if (debounceTimer) window.clearTimeout(debounceTimer);
   debounceTimer = window.setTimeout(() => {
+    if (!isExtensionContextValid()) return;
     attemptResolve(reason);
   }, OBSERVER_DEBOUNCE_MS);
 };
@@ -318,6 +340,7 @@ const observeTitleChanges = () => {
     (event) => {
       try {
         lastPointerTarget = event.target as Element;
+        lastPointerAt = Date.now();
         scheduleResolve("pointer");
       } catch (error) {
         log("Pointer observer failed", { error });
@@ -401,11 +424,19 @@ const setDebugHook = () => {
 };
 
 export const initNetflixObserver = async () => {
+  if (!isExtensionContextValid()) return;
   const win = getNxlWindow();
   if (win.__nxlBooted) return;
   win.__nxlBooted = true;
 
-  const state = await getStorage();
+  let state;
+  try {
+    state = await getStorage();
+  } catch (err) {
+    if (isContextInvalidatedError(err)) return;
+    throw err;
+  }
+  if (!isExtensionContextValid()) return;
   overlayEnabled = state[STORAGE_KEYS.OVERLAY_ENABLED] ?? true;
 
   updatePlaybackState();

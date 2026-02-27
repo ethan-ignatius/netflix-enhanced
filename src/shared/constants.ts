@@ -1,10 +1,12 @@
 export const DEBUG = true;
 
-/** When set (at build time via VITE_PROXY_BASE_URL), extension uses backend proxy; users need no TMDb/AWS keys. */
+/** Backend proxy URL. Extension uses this for TMDb + Rekognition so users need no keys.
+ *  Default below: localhost for local testing. For Fly.io: run
+ *  VITE_PROXY_BASE_URL=https://netflix-enhanced.fly.dev npm run build */
 export const PROXY_BASE_URL =
   (typeof import.meta !== "undefined" &&
     (import.meta as { env?: { VITE_PROXY_BASE_URL?: string } }).env?.VITE_PROXY_BASE_URL) ||
-  "";
+  "http://localhost:3782";
 
 /** Storage keys. Never store or ship AWS/TMDb secrets in source — only in chrome.storage (user-set). */
 export const STORAGE_KEYS = {

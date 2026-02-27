@@ -115,6 +115,7 @@ export const registerMessageHandlers = () => {
                 actors: result.actors,
                 noFaces: result.noFaces,
                 drmBlocked: result.drmBlocked,
+                permissionRequired: result.permissionRequired,
                 error: result.error
               }
             };

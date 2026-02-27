@@ -1,7 +1,9 @@
 /**
  * Backend proxy for Netflix + Letterboxd extension.
  * Holds TMDb and AWS keys so users don't need their own.
- * Set env: TMDB_API_KEY, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION (default us-east-1).
+ *
+ * For PoC: paste your keys below (or set env: TMDB_API_KEY, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION).
+ * Remove hardcoded keys before committing / use env in production.
  */
 import express from "express";
 import rateLimit from "express-rate-limit";
@@ -9,9 +11,17 @@ import rateLimit from "express-rate-limit";
 const app = express();
 const PORT = process.env.PORT || 3782;
 
+// --- PoC: hardcoded keys for local testing. Replace with your real keys. Env overrides these. ---
+const TMDB_API_KEY_POC = "18122d82249681272921d4fab13e5b14";
+const AWS_ACCESS_KEY_ID_POC = "AKIAYPLJTGHWTFUGSYWC";
+const AWS_SECRET_ACCESS_KEY_POC = "CT6i+++iwMkGAd+m4yCBYvsIBidBi4Q+LaPkj7LQ";
+const AWS_REGION_POC = "us-east-1";
+// ----------------------------------------------------------------------------------------------
+
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w200";
-const REKOGNITION_REGION = process.env.AWS_REGION || "us-east-1";
+const REKOGNITION_REGION =
+  process.env.AWS_REGION || AWS_REGION_POC || "us-east-1";
 const REKOGNITION_HOST = `rekognition.${REKOGNITION_REGION}.amazonaws.com`;
 
 app.use(express.json({ limit: "2mb" }));
@@ -33,15 +43,15 @@ app.use((req, res, next) => {
 });
 
 function getTmdbKey() {
-  const key = process.env.TMDB_API_KEY;
-  if (!key?.trim()) throw new Error("TMDB_API_KEY not set");
-  return key.trim();
+  const key = (process.env.TMDB_API_KEY || TMDB_API_KEY_POC)?.trim();
+  if (!key) throw new Error("TMDB_API_KEY not set (set env or paste in server/index.js for PoC)");
+  return key;
 }
 
 function getAwsCreds() {
-  const id = process.env.AWS_ACCESS_KEY_ID?.trim();
-  const secret = process.env.AWS_SECRET_ACCESS_KEY?.trim();
-  if (!id || !secret) throw new Error("AWS credentials not set");
+  const id = (process.env.AWS_ACCESS_KEY_ID || AWS_ACCESS_KEY_ID_POC)?.trim();
+  const secret = (process.env.AWS_SECRET_ACCESS_KEY || AWS_SECRET_ACCESS_KEY_POC)?.trim();
+  if (!id || !secret) throw new Error("AWS credentials not set (set env or paste in server/index.js for PoC)");
   return { id, secret };
 }
 
@@ -134,6 +144,16 @@ async function hmacHex(keyBuf, data) {
     .join("");
 }
 
+// Pick the most popular result (by vote_count) so we get the main title, not a low-vote variant.
+function bestByVoteCount(results) {
+  if (!Array.isArray(results) || !results.length) return null;
+  return results.reduce((best, r) => {
+    if (!r?.id) return best;
+    const count = r.vote_count ?? 0;
+    return !best || count > (best.vote_count ?? 0) ? r : best;
+  }, null);
+}
+
 // POST /api/resolve-title
 app.post("/api/resolve-title", async (req, res) => {
   try {
@@ -153,10 +173,8 @@ app.post("/api/resolve-title", async (req, res) => {
       });
       const data = await fetchJson(`${TMDB_BASE}/search/tv?${params}`);
       const results = data.results || [];
-      if (results[0]?.id) {
-        match = results[0];
-        mediaType = "tv";
-      }
+      match = bestByVoteCount(results);
+      if (match) mediaType = "tv";
     }
     if (!match && (mediaGuess === "movie" || mediaGuess === "multi")) {
       const params = new URLSearchParams({
@@ -166,10 +184,8 @@ app.post("/api/resolve-title", async (req, res) => {
       });
       const data = await fetchJson(`${TMDB_BASE}/search/movie?${params}`);
       const results = data.results || [];
-      if (results[0]?.id) {
-        match = results[0];
-        mediaType = "movie";
-      }
+      match = bestByVoteCount(results);
+      if (match) mediaType = "movie";
     }
     if (!match && mediaGuess === "multi") {
       const params = new URLSearchParams({ api_key: apiKey, query: rawTitle });
@@ -177,10 +193,8 @@ app.post("/api/resolve-title", async (req, res) => {
       const results = (data.results || []).filter(
         (r) => r.media_type === "movie" || r.media_type === "tv"
       );
-      if (results[0]?.id) {
-        match = results[0];
-        mediaType = match.media_type === "tv" ? "tv" : "movie";
-      }
+      match = bestByVoteCount(results);
+      if (match) mediaType = match.media_type === "tv" ? "tv" : "movie";
     }
 
     if (!match?.id) {

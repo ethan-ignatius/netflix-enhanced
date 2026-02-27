@@ -95,6 +95,15 @@ const scoreCandidate = (
   const normalizedQuery = info.normalizedTitle || normalizeTitle(info.rawTitle);
   const similarity = getTitleSimilarity(normalizedQuery, normalizedCandidate);
   let score = similarity * 100;
+  const queryTokens = normalizedQuery.split(" ").filter(Boolean);
+  const candidateTokens = new Set(normalizedCandidate.split(" ").filter(Boolean));
+  if (queryTokens.length > 1) {
+    const matchedTokens = queryTokens.filter((token) => candidateTokens.has(token)).length;
+    const missingTokens = queryTokens.length - matchedTokens;
+    score -= missingTokens * 26;
+    if (missingTokens === 0) score += 24;
+    if (matchedTokens === 1 && queryTokens.length >= 3) score -= 22;
+  }
 
   const releaseDate = candidate.release_date ?? candidate.first_air_date;
   const candidateYear = releaseDate ? Number(releaseDate.slice(0, 4)) : undefined;

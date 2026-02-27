@@ -1,5 +1,5 @@
 import { log } from "../../shared/logger";
-import { STORAGE_KEYS } from "../../shared/constants";
+import { PROXY_BASE_URL, STORAGE_KEYS } from "../../shared/constants";
 import {
   buildLegacyLetterboxdKey,
   buildLetterboxdKey,
@@ -13,8 +13,23 @@ import {
   getTmdbCacheSnapshot,
   searchTmdbId
 } from "../tmdb";
+import { resolveTitle } from "../api-proxy";
 
 const PROFILE_TTL_MS = 24 * 60 * 60 * 1000;
+
+const buildTitleVariants = (title?: string): string[] => {
+  if (!title) return [];
+  const base = title.trim();
+  if (!base) return [];
+  const variants = new Set<string>([base]);
+  const colon = base.split(":")[0]?.trim();
+  const dash = base.split(" - ")[0]?.trim();
+  const pipe = base.split("|")[0]?.trim();
+  if (colon && colon.length >= 2) variants.add(colon);
+  if (dash && dash.length >= 2) variants.add(dash);
+  if (pipe && pipe.length >= 2) variants.add(pipe);
+  return Array.from(variants);
+};
 
 type MatchProfile = {
   storedAt: number;
@@ -60,19 +75,21 @@ export const resolveLetterboxdEntry = async (
   });
   const payloadTitle = "rawTitle" in payload ? payload.rawTitle : payload.titleText;
   const payloadYear = "rawTitle" in payload ? payload.year ?? undefined : payload.year;
+  const payloadVariants = buildTitleVariants(payloadTitle);
+  const resolvedVariants = buildTitleVariants(resolvedTitle);
 
   const keys = [
-    buildLetterboxdKey(payloadTitle, payloadYear),
-    buildLetterboxdKey(resolvedTitle, resolvedYear),
-    buildLetterboxdKey(payloadTitle, undefined),
-    buildLetterboxdKey(resolvedTitle, undefined)
-  ].filter((key) => key);
+    ...payloadVariants.map((title) => buildLetterboxdKey(title, payloadYear)),
+    ...resolvedVariants.map((title) => buildLetterboxdKey(title, resolvedYear)),
+    ...payloadVariants.map((title) => buildLetterboxdKey(title, undefined)),
+    ...resolvedVariants.map((title) => buildLetterboxdKey(title, undefined))
+  ].filter(Boolean);
   const legacyKeys = [
-    buildLegacyLetterboxdKey(payloadTitle, payloadYear),
-    buildLegacyLetterboxdKey(resolvedTitle, resolvedYear),
-    buildLegacyLetterboxdKey(payloadTitle, undefined),
-    buildLegacyLetterboxdKey(resolvedTitle, undefined)
-  ].filter((key) => key);
+    ...payloadVariants.map((title) => buildLegacyLetterboxdKey(title, payloadYear)),
+    ...resolvedVariants.map((title) => buildLegacyLetterboxdKey(title, resolvedYear)),
+    ...payloadVariants.map((title) => buildLegacyLetterboxdKey(title, undefined)),
+    ...resolvedVariants.map((title) => buildLegacyLetterboxdKey(title, undefined))
+  ].filter(Boolean);
   const attemptedKeys = Array.from(new Set([...keys, ...legacyKeys]));
   log("LB_MATCH_KEYS", { attemptedKeys });
 
@@ -91,9 +108,6 @@ export const resolveLetterboxdEntry = async (
 };
 
 export const buildMatchProfile = async (): Promise<MatchProfile | null> => {
-  const apiKey = await getTmdbApiKey();
-  if (!apiKey) return null;
-
   const stats = await getLetterboxdStats();
   const cached = await getMatchProfileCache();
   if (
@@ -108,10 +122,14 @@ export const buildMatchProfile = async (): Promise<MatchProfile | null> => {
 
   const index = await getLetterboxdIndex();
   if (!index) return null;
-  const tmdbCache = await getTmdbCacheSnapshot();
   const entries = Object.entries(index.ratingsByKey);
   if (!entries.length) return null;
 
+  const useProxy = Boolean(PROXY_BASE_URL?.trim());
+  const apiKey = useProxy ? null : await getTmdbApiKey();
+  if (!useProxy && !apiKey) return null;
+
+  const tmdbCache = await getTmdbCacheSnapshot();
   let ratingSum = 0;
   let ratingCount = 0;
   const genreTotals: Record<string, { sum: number; count: number }> = {};
@@ -125,19 +143,46 @@ export const buildMatchProfile = async (): Promise<MatchProfile | null> => {
     const { title, year } = parseLetterboxdKey(key);
     if (!title) continue;
 
-    const searchResult = await searchTmdbId(apiKey, title, year, tmdbCache);
-    if (!searchResult) continue;
+    let genres: string[] = [];
+    let releaseYear: number | undefined;
 
-    const features = await getTmdbFeatures(apiKey, searchResult.tmdbId, searchResult.mediaType);
-    if (!features) continue;
+    if (useProxy) {
+      try {
+        const resolved = await resolveTitle({
+          rawTitle: title,
+          normalizedTitle: title,
+          year: year ?? null,
+          isSeries: undefined,
+          netflixId: null,
+          href: null
+        });
+        genres = resolved.tmdbGenres ?? [];
+        releaseYear = resolved.releaseYear ?? year ?? undefined;
+      } catch {
+        continue;
+      }
+    } else {
+      const searchResult = await searchTmdbId(apiKey!, title, year, tmdbCache);
+      if (!searchResult) continue;
+      const features = await getTmdbFeatures(
+        apiKey!,
+        searchResult.tmdbId,
+        searchResult.mediaType
+      );
+      if (!features) continue;
+      releaseYear = features.releaseYear ?? searchResult.releaseYear ?? year;
+      genres = features.genres ?? [];
+    }
 
-    const releaseYear = features.releaseYear ?? searchResult.releaseYear ?? year;
-    const decade = releaseYear ? `${Math.floor(releaseYear / 10) * 10}s` : undefined;
+    const decade = releaseYear
+      ? `${Math.floor(releaseYear / 10) * 10}s`
+      : undefined;
 
-    features.genres.forEach((genre) => {
-      if (!genreTotals[genre]) genreTotals[genre] = { sum: 0, count: 0 };
-      genreTotals[genre].sum += rating;
-      genreTotals[genre].count += 1;
+    genres.forEach((genre) => {
+      const g = genre.toLowerCase();
+      if (!genreTotals[g]) genreTotals[g] = { sum: 0, count: 0 };
+      genreTotals[g].sum += rating;
+      genreTotals[g].count += 1;
     });
 
     if (decade) {

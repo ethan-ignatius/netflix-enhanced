@@ -99,6 +99,7 @@ export type XrayFrameResultMessage = {
     actors: XraySceneActor[];
     noFaces?: boolean;
     drmBlocked?: boolean;
+    permissionRequired?: boolean;
     error?: string;
   };
 };
