@@ -1,7 +1,7 @@
 # Netflix + Letterboxd (Chrome Extension)
 
 ## Overview
-Netflix + Letterboxd is a Manifest V3 Chrome extension that overlays Letterboxd-informed insights on Netflix expanded title cards, and (optionally) provides **X-Ray style actor recognition on paused playback scenes**. It uses your Letterboxd export ZIP for local personalization and TMDb for community ratings.
+Netflix + Letterboxd is a Manifest V3 Chrome extension that overlays Letterboxd-informed insights on Netflix expanded title cards, captures live viewer reactions during playback, and visualizes those reactions as an emotional timeline above the scrubber. It uses a Letterboxd export ZIP for local personalization and TMDb for community ratings.
 
 ## Preview
 
@@ -14,12 +14,46 @@ Netflix + Letterboxd is a Manifest V3 Chrome extension that overlays Letterboxd-
 ## Architecture
 - **Users need no API keys.** The extension talks to a small backend you deploy; that backend holds one TMDb API key and one set of AWS Rekognition credentials. Users only enable the overlay and (optionally) import their Letterboxd export.
 - Content script detects the expanded Netflix jawbone card and injects a Shadow DOM UI on browse pages.
-- Content script also hooks into the `/watch/*` player, watching for **pause** events to trigger X-Ray scene analysis.
+- Content script hooks into the `/watch/*` player for reaction capture, timeline hover interactions, and playback state handling.
+- Reaction events are sent to the background service worker, persisted in `chrome.storage.local`, and aggregated into timeline buckets on demand.
 - Background service worker calls your **backend proxy** for title resolution and X-Ray (or, if no proxy URL is set at build time, uses TMDb/AWS directly with user-supplied keys from storage).
 - An offscreen document + `chrome.tabCapture` capture a single video frame for X-Ray, run local face detection (TensorFlow.js + `modern-face-api`), and return cropped faces to the background; the background sends those to the proxy for celebrity recognition and TMDb person/character lookup.
 - Popup handles overlay toggle and Letterboxd ZIP import only.
 
 See `docs/ARCHITECTURE.md` for full details.
+
+## Reaction Capture and Emotional Timeline
+
+### What is captured
+- While watching a title, keyboard reactions are captured as events.
+- Each event stores title ID, timestamp, and reaction type.
+- Events are saved per title in `chrome.storage.local`.
+
+### How the timeline is built
+- On request, events are grouped into fixed time buckets across the full runtime.
+- Each bucket stores total count and per-reaction counts.
+- The timeline UI renders these buckets as a smoothed area graph aligned to the Netflix scrubber.
+
+### Emotional signal and intensity
+- Each reaction maps to two emotion dimensions: valence and arousal.
+- For each bucket, valence and arousal are averaged across all reactions in that bucket.
+- Intensity is computed from two factors:
+  - emotional distance from neutral
+  - number of reactions in the bucket
+- The final intensity uses a soft logarithmic scale so very large bursts do not dominate the entire graph.
+
+## Letterboxd Match Calculation
+
+- Import `ratings.csv` and `watchlist.csv` from the Letterboxd export ZIP.
+- Build a local taste profile from your ratings.
+- For each genre, compute preference strength as:
+  - genre average rating minus your overall average rating
+- For the current Netflix title, look at its TMDb genres and combine matching genre strengths with confidence weighting based on rating count.
+- Convert the weighted score into a bounded percentage:
+  - neutral starts near fifty percent
+  - stronger positive genre alignment pushes the score higher
+  - negative alignment pushes it lower
+- Show top positive genres as the “Because you like” explanation.
 
 ### Backend proxy (recommended for “users don’t need keys”)
 
@@ -35,7 +69,7 @@ cd server && npm install && npm start
 
 ## X-Ray actor recognition
 
-When you pause Netflix playback on a `/watch/*` page, the extension can show an **“In this scene”** panel on the right side of the screen listing the actors detected in the paused frame.
+X-Ray plumbing is included in this codebase, but actor rendering is currently disabled in this branch. The section below describes the intended architecture and deployment model.
 
 ### Requirements (when using the backend proxy)
 
@@ -102,10 +136,10 @@ npm run dev
 
 ## Demo
 1. Open the extension popup and enable the overlay (and X-Ray, if you make it togglable in UI).
-2. Paste your TMDb API key and save.
-3. Upload your Letterboxd export ZIP.
-4. Hover an expanded Netflix title card to see ratings, match score, and badges.
-5. Start playing a title on Netflix, **pause on a scene**, and look for the **“In this scene”** panel with detected actors on the right side of the screen.
+2. Upload your Letterboxd export ZIP.
+3. Hover an expanded Netflix title card to see ratings, match score, and badges.
+4. Start playing a title on Netflix and press reaction keys while watching.
+5. Move the cursor to reveal controls and inspect the reaction timeline above the scrubber.
 
 ## To Do
 1. Watch history per movie/show.

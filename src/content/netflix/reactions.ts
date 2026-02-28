@@ -188,6 +188,38 @@ const setHelpPanelVisible = (visible: boolean) => {
 
 const isWatchPage = (): boolean => window.location.pathname.includes("/watch/");
 
+const isAdPlaybackContext = (): boolean => {
+  try {
+    const adSelectors = [
+      "[data-uia*='ad-break']",
+      "[data-uia*='ad_break']",
+      "[data-uia*='ads']",
+      "[class*='ad-break']",
+      "[class*='adBreak']",
+      "[class*='adOverlay']"
+    ];
+    for (const selector of adSelectors) {
+      const el = document.querySelector(selector);
+      if (el) return true;
+    }
+
+    const textHints = ["Ad 1 of", "Ad 2 of", "Your show will resume", "resumes after ads"];
+    const textContainers = Array.from(
+      document.querySelectorAll<HTMLElement>("span, div, p, h1, h2, h3")
+    ).slice(0, 300);
+    for (const node of textContainers) {
+      const text = node.textContent;
+      if (!text) continue;
+      const normalized = text.trim();
+      if (!normalized) continue;
+      if (textHints.some((hint) => normalized.includes(hint))) return true;
+    }
+  } catch {
+    // If detection fails for any reason, assume non-ad context.
+  }
+  return false;
+};
+
 const clearOverlayTimers = () => {
   if (hoverHideTimer !== null) {
     window.clearTimeout(hoverHideTimer);
@@ -234,6 +266,12 @@ const requestTimelineMount = (force = false) => {
 
 const showHoverTimeline = () => {
   if (!isWatchPage()) return;
+  if (isAdPlaybackContext()) {
+    clearOverlayTimers();
+    setHelpPanelVisible(false);
+    hideEmotionTimeline();
+    return;
+  }
   const video = getMainVideo();
   if (!video || video.paused || video.ended) return;
 
